@@ -8,6 +8,7 @@ import numpy as np
 import random
 import pytest
 import pymongo
+import pickle
 
 from arctic.chunkstore.chunkstore import START, SYMBOL
 from arctic.chunkstore.passthrough_chunker import PassthroughChunker
@@ -661,6 +662,7 @@ def test_get_info(chunkstore_lib):
                    )
     chunkstore_lib.write('test_df', df)
     info = {'len': 3,
+            'appended_rows': 0,
             'chunk_count': 3,
             'metadata': {'columns': [u'date', u'id', u'data']},
             'chunker': u'date',
@@ -688,6 +690,7 @@ def test_get_info_after_append(chunkstore_lib):
     assert_frame_equal(chunkstore_lib.read('test_df'), pd.concat([df, df2]).sort_index())
 
     info = {'len': 6,
+            'appended_rows': 2,
             'chunk_count': 4,
             'metadata': {'columns': [u'date', u'id', u'data']},
             'chunker': u'date',
@@ -715,6 +718,7 @@ def test_get_info_after_update(chunkstore_lib):
     chunkstore_lib.update('test_df', df2)
 
     info = {'len': 4,
+            'appended_rows': 0,
             'chunk_count': 4,
             'metadata': {'columns': [u'date', u'id', u'data']},
             'chunker': u'date',
@@ -991,6 +995,10 @@ def test_rename(chunkstore_lib):
     with pytest.raises(Exception) as e:
         chunkstore_lib.rename('new_name', 'new_name')
     assert('already exists' in str(e))
+    
+    with pytest.raises(NoDataFoundException) as e:
+        chunkstore_lib.rename('doesnt_exist', 'temp')
+    assert('No data found for doesnt_exist' in str(e))
 
     assert('test' not in chunkstore_lib.list_symbols())
 
@@ -1125,9 +1133,9 @@ def test_get_chunk_range(chunkstore_lib):
     chunkstore_lib.write('test_df', df, chunk_size='D')
     x = list(chunkstore_lib.get_chunk_ranges('test_df'))
     assert(len(x) == 3)
-    assert((b'2016-01-01', b'2016-01-01') in x)
-    assert((b'2016-01-02', b'2016-01-02') in x)
-    assert((b'2016-01-03', b'2016-01-03') in x)
+    assert((b'2016-01-01 00:00:00', b'2016-01-01 23:59:59.999000') in x)
+    assert((b'2016-01-02 00:00:00', b'2016-01-02 23:59:59.999000') in x)
+    assert((b'2016-01-03 00:00:00', b'2016-01-03 23:59:59.999000') in x)
 
 
 def test_iterators(chunkstore_lib):
@@ -1205,3 +1213,161 @@ def test_list_symbols(chunkstore_lib):
 
     assert(chunkstore_lib.has_symbol('dragon'))
     assert(chunkstore_lib.has_symbol('marmot') is False)
+
+
+def test_stats(chunkstore_lib):
+    df = DataFrame(data={'data': np.random.randint(0, 100, size=366)},
+                   index=pd.date_range('2016-01-01', '2016-12-31'))
+    df.index.name = 'date'
+
+    chunkstore_lib.write('rabbit', df)
+    chunkstore_lib.write('dragon', df)
+    chunkstore_lib.write('snake', df)
+    chunkstore_lib.write('wolf', df)
+    chunkstore_lib.write('bear', df)
+
+    s = chunkstore_lib.stats()
+    assert(s['symbols']['count'] == 5)
+    assert(s['chunks']['count'] == 366 * 5)
+    assert(s['chunks']['count'] == s['metadata']['count'])
+
+
+def test_metadata(chunkstore_lib):
+    df = DataFrame(data={'data': np.random.randint(0, 100, size=2)},
+                   index=pd.date_range('2016-01-01', '2016-01-02'))
+    df.index.name = 'date'
+    chunkstore_lib.write('data', df, metadata = 'some metadata')
+    m = chunkstore_lib.read_metadata('data')
+    assert(m == u'some metadata')
+
+
+def test_metadata_update(chunkstore_lib):
+    df = DataFrame(data={'data': np.random.randint(0, 100, size=2)},
+                   index=pd.date_range('2016-01-01', '2016-01-02'))
+    df.index.name = 'date'
+    chunkstore_lib.write('data', df, metadata = 'some metadata', chunk_size='M')
+   
+    df = DataFrame(data={'data': np.random.randint(0, 100, size=1)},
+                   index=pd.date_range('2016-01-02', '2016-01-02'))
+    df.index.name = 'date'
+    chunkstore_lib.update('data', df, metadata='different metadata')
+    m = chunkstore_lib.read_metadata('data')
+    assert(m == u'different metadata') 
+
+
+def test_metadata_nosymbol(chunkstore_lib):
+    with pytest.raises(NoDataFoundException):
+        chunkstore_lib.read_metadata('None')
+
+
+def test_metadata_none(chunkstore_lib):
+    df = DataFrame(data={'data': np.random.randint(0, 100, size=2)},
+                   index=pd.date_range('2016-01-01', '2016-01-02'))
+    df.index.name = 'date'
+    chunkstore_lib.write('data', df, chunk_size='M')
+    assert(chunkstore_lib.read_metadata('data') == None)
+
+
+def test_metadata_invalid(chunkstore_lib):
+    df = DataFrame(data={'data': np.random.randint(0, 100, size=2)},
+                   index=pd.date_range('2016-01-01', '2016-01-02'))
+    df.index.name = 'date'
+    with pytest.raises(Exception) as e:
+        chunkstore_lib.write('data', df, chunk_size='M', metadata=df)
+
+
+def test_write_metadata(chunkstore_lib):
+    df = DataFrame(data={'data': np.random.randint(0, 100, size=2)},
+                   index=pd.date_range('2016-01-01', '2016-01-02'))
+    df.index.name = 'date'
+    chunkstore_lib.write('data', df)
+    chunkstore_lib.write_metadata('data', 'meta')
+    m = chunkstore_lib.read_metadata('data')
+    assert(m == u'meta')
+
+
+def test_write_metadata_nosymbol(chunkstore_lib):
+    with pytest.raises(NoDataFoundException):
+        chunkstore_lib.write_metadata('doesnt_exist', 'meta')
+
+
+def test_audit(chunkstore_lib):
+    df = DataFrame(data={'data': np.random.randint(0, 100, size=2)},
+                   index=pd.date_range('2016-01-01', '2016-01-02'))
+    df.index.name = 'date'
+    chunkstore_lib.write('data', df, audit={'user': 'test_user'})
+    df = DataFrame(data={'data': np.random.randint(0, 100, size=10)},
+                   index=pd.date_range('2016-01-01', '2016-01-10'))
+    df.index.name = 'date'
+    chunkstore_lib.write('data', df, audit={'user': 'other_user'})    
+    
+    assert(len(chunkstore_lib.read_audit_log()) == 2)
+    assert(len(chunkstore_lib.read_audit_log(symbol='data')) == 2)
+    assert(len(chunkstore_lib.read_audit_log(symbol='none')) == 0)
+    
+    chunkstore_lib.append('data', df, audit={'user': 'test_user'})
+    assert(chunkstore_lib.read_audit_log()[-1]['appended_rows'] == 10)
+
+    df = DataFrame(data={'data': np.random.randint(0, 100, size=5)},
+                   index=pd.date_range('2017-01-01', '2017-01-5'))
+    df.index.name = 'date'
+    chunkstore_lib.update('data', df, audit={'user': 'other_user'})    
+    assert(chunkstore_lib.read_audit_log()[-1]['new_chunks'] == 5)
+    
+    chunkstore_lib.rename('data', 'data_new', audit={'user': 'temp_user'})
+    assert(chunkstore_lib.read_audit_log()[-1]['action'] == 'symbol rename')
+    
+    chunkstore_lib.delete('data_new', chunk_range=DateRange('2016-01-01', '2016-01-02'), audit={'user': 'test_user'})
+    chunkstore_lib.delete('data_new', audit={'user': 'test_user'})
+    assert(chunkstore_lib.read_audit_log()[-1]['action'] == 'symbol delete')
+    assert(chunkstore_lib.read_audit_log()[-2]['action'] == 'range delete')
+
+
+def test_chunkstore_misc(chunkstore_lib):
+
+    p = pickle.dumps(chunkstore_lib)
+    c = pickle.loads(p)
+    assert(chunkstore_lib._arctic_lib.get_name() == c._arctic_lib.get_name())
+    
+    assert("arctic_test.TEST" in str(chunkstore_lib))
+    assert(str(chunkstore_lib) == repr(chunkstore_lib))
+
+
+def test_unsorted_index(chunkstore_lib):
+    df = pd.DataFrame({'date': [dt(2016,9,1), dt(2016,8,31)],
+                       'vals': range(2)}).set_index('date')
+    df2 = pd.DataFrame({'date': [dt(2016,9,2), dt(2016,9,1)],
+                        'vals': range(2)}).set_index('date')
+    
+    chunkstore_lib.write('test_symbol', df)
+    assert_frame_equal(df.sort_index(), chunkstore_lib.read('test_symbol'))
+    chunkstore_lib.update('test_symbol', df2)
+    assert_frame_equal(chunkstore_lib.read('test_symbol'), 
+                       pd.DataFrame({'date': pd.date_range('2016-8-31',
+                                                           '2016-9-2'),
+                                     'vals': [1,1,0]}).set_index('date'))
+    
+def test_unsorted_date_col(chunkstore_lib):
+    df = pd.DataFrame({'date': [dt(2016,9,1), dt(2016,8,31)],
+                       'vals': range(2)})
+    df2 = pd.DataFrame({'date': [dt(2016,9,2), dt(2016,9,1)],
+                        'vals': range(2)})
+
+    chunkstore_lib.write('test_symbol', df)
+    try:
+        df = df.sort_values('date')
+    except AttributeError:
+        df = df.sort(columns='date')
+    assert_frame_equal(df.reset_index(drop=True), chunkstore_lib.read('test_symbol'))
+    chunkstore_lib.update('test_symbol', df2)
+    assert_frame_equal(chunkstore_lib.read('test_symbol'), 
+                       pd.DataFrame({'date': pd.date_range('2016-8-31',
+                                                           '2016-9-2'),
+                                     'vals': [1,1,0]}))
+
+
+def test_chunk_range_with_dti(chunkstore_lib):
+    df = pd.DataFrame({'date': [dt(2016,9,1), dt(2016,8,31)],
+                       'vals': range(2)})
+    chunkstore_lib.write('data', df)
+    assert(len(list(chunkstore_lib.get_chunk_ranges('data', chunk_range=pd.date_range(dt(2016,1,1), dt(2016, 12, 31))))) == 2)

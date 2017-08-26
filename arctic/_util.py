@@ -23,7 +23,24 @@ def are_equals(o1, o2, **kwargs):
         return False
 
 
-def enable_sharding(arctic, library_name, hashed=False):
+def enable_sharding(arctic, library_name, hashed=True, key='symbol'):
+    """
+    Enable sharding on a library
+
+    Parameters:
+    -----------
+    arctic: `arctic.Arctic` Arctic class
+
+    library_name: `basestring` library name
+
+    hashed: `bool` if True, use hashed sharding, if False, use range sharding
+            See https://docs.mongodb.com/manual/core/hashed-sharding/,
+            as well as https://docs.mongodb.com/manual/core/ranged-sharding/ for details.
+
+    key: `basestring` key to be used for sharding. Defaults to 'symbol', applicable to
+         all of Arctic's built-in stores except for BSONStore, which typically uses '_id'.
+         See https://docs.mongodb.com/manual/core/sharding-shard-key/ for details.
+    """
     c = arctic._conn
     lib = arctic[library_name]._arctic_lib
     dbname = lib._db.name
@@ -31,23 +48,11 @@ def enable_sharding(arctic, library_name, hashed=False):
     try:
         c.admin.command('enablesharding', dbname)
     except OperationFailure as e:
-        if not 'failed: already enabled' in str(e):
+        if not 'already enabled' in str(e):
             raise
     if not hashed:
-        logger.info("Range sharding 'symbol' on: " + dbname + '.' + library_name)
-        c.admin.command('shardCollection', dbname + '.' + library_name, key={'symbol': 1})
+        logger.info("Range sharding '" + key + "' on: " + dbname + '.' + library_name)
+        c.admin.command('shardCollection', dbname + '.' + library_name, key={key: 1})
     else:
-        logger.info("Hash sharding 'symbol' on: " + dbname + '.' + library_name)
-        c.admin.command('shardCollection', dbname + '.' + library_name, key={'symbol': 'hashed'})
-
-
-def enable_powerof2sizes(arctic, library_name):
-    lib = arctic[library_name]._arctic_lib
-    collection = lib.get_top_level_collection()
-    lib._db.command({"collMod": collection.name, 'usePowerOf2Sizes': "true"})
-    logger.info("usePowerOf2Sizes enabled for %s", collection.name)
-
-    for coll in collection.database.collection_names():
-        if coll.startswith("%s." % collection.name):
-            lib._db.command({"collMod": coll, 'usePowerOf2Sizes': "true"})
-            logger.info("usePowerOf2Sizes enabled for %s", coll)
+        logger.info("Hash sharding '" + key + "' on: " + dbname + '.' + library_name)
+        c.admin.command('shardCollection', dbname + '.' + library_name, key={key: 'hashed'})

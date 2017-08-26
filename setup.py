@@ -21,9 +21,25 @@ from setuptools import setup
 from setuptools.extension import Extension
 from setuptools import find_packages
 from setuptools.command.test import test as TestCommand
-from Cython.Build import cythonize
-import six
 import sys
+import os
+import platform
+
+
+if platform.system().lower() == 'darwin':
+    # clang on macOS does not work with OpenMP
+    ccs = ["/usr/local/bin/g++-5", "/usr/local/bin/g++-6", "/usr/local/bin/g++-7"]
+    cc = None
+    for compiler in ccs:
+        if os.path.isfile(compiler):
+            cc = compiler
+    if cc is None:
+        raise ValueError("You must install gcc/g++. You can install with homebrew: brew install gcc --without-multilib")
+    os.environ["CC"] = cc.replace("g++", "gcc")
+    os.environ["CXX"] = cc
+    # not all OSX/clang compiler flags supported by GCC. For some reason
+    # these sometimes are generated and used. Cython will still add more flags.
+    os.environ["CFLAGS"] = "-fno-common -fno-strict-aliasing -DENABLE_DTRACE -DMACOSX -DNDEBUG -Wall -g -fwrapv -Os"
 
 # Convert Markdown to RST for PyPI
 # http://stackoverflow.com/a/26737672
@@ -53,25 +69,49 @@ class PyTest(TestCommand):
 
         # import here, cause outside the eggs aren't loaded
         import pytest
+        import six
 
         args = [self.pytest_args] if isinstance(self.pytest_args, six.string_types) else list(self.pytest_args)
         args.extend(['--cov', 'arctic',
                      '--cov-report', 'xml',
                      '--cov-report', 'html',
                      '--junitxml', 'junit.xml',
-                     ])
+                    ])
         errno = pytest.main(args)
         sys.exit(errno)
 
-# Cython lz4
-compress = Extension('arctic._compress',
-                     sources=["src/_compress.pyx", "src/lz4.c", "src/lz4hc.c"],
-                     extra_compile_args=['-fopenmp'],
-                     extra_link_args=['-fopenmp'])
+
+class defer_cythonize(list):
+    def __init__(self, callback):
+        self._list, self.callback = None, callback
+
+    def c_list(self):
+        if self._list is None:
+            self._list = self.callback()
+        return self._list
+
+    def __iter__(self):
+        for elem in self.c_list():
+            yield elem
+
+    def __getitem__(self, ii):
+        return self.c_list()[ii]
+
+    def __len__(self):
+        return len(self.c_list())
+
+
+def extensions():
+    from Cython.Build import cythonize
+    return cythonize(Extension('arctic._compress',
+                               sources=["src/_compress.pyx", "src/lz4.c", "src/lz4hc.c"],
+                               extra_compile_args=['-fopenmp', '-fpermissive'], # Avoid compiling error with prange. Similar to http://stackoverflow.com/questions/36577182/unable-to-assign-value-to-array-in-prange
+                               extra_link_args=['-fopenmp']))
+
 
 setup(
     name="arctic",
-    version="1.34.0",
+    version="1.52.0",
     author="Man AHL Technology",
     author_email="ManAHLTech@ahl.com",
     description=("AHL Research Versioned TimeSeries and Tick store"),
@@ -81,21 +121,22 @@ setup(
     packages=find_packages(exclude=['tests', 'tests.*', 'benchmarks']),
     long_description='\n'.join((long_description, changelog)),
     cmdclass={'test': PyTest},
-    ext_modules=cythonize(compress),
-    setup_requires=["Cython",
+    ext_modules=defer_cythonize(extensions),
+    setup_requires=["six",
+                    "cython",
                     "numpy",
                     "setuptools-git",
-                    ],
-    install_requires=["decorator",
+                   ],
+    install_requires=["cython",
+                      "decorator",
                       "enum34",
-                      "lz4",
                       "mockextras",
                       "pandas",
-                      "pymongo>=3.0",
+                      "pymongo",
                       "python-dateutil",
                       "pytz",
                       "tzlocal",
-                      ],
+                     ],
     tests_require=["mock",
                    "mockextras",
                    "pytest",
@@ -103,7 +144,8 @@ setup(
                    "pytest-server-fixtures",
                    "pytest-timeout",
                    "pytest-xdist",
-                   ],
+                   "lz4"
+                  ],
     entry_points={'console_scripts': [
                                         'arctic_init_library = arctic.scripts.arctic_init_library:main',
                                         'arctic_list_libraries = arctic.scripts.arctic_list_libraries:main',
@@ -121,6 +163,7 @@ setup(
         "Programming Language :: Python :: 2.7",
         "Programming Language :: Python :: 3.4",
         "Programming Language :: Python :: 3.5",
+        "Programming Language :: Python :: 3.6",
         "Programming Language :: Python :: Implementation :: CPython",
         "Programming Language :: Cython",
         "Operating System :: POSIX",

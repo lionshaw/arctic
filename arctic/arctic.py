@@ -9,25 +9,28 @@ from .auth import authenticate, get_auth
 from .decorators import mongo_retry
 from .exceptions import LibraryNotFoundException, ArcticException, QuotaExceededException
 from .hooks import get_mongodb_uri
-from .store import version_store
+from .store import version_store, bson_store, metadata_store
 from .tickstore import tickstore, toplevel
 from .chunkstore import chunkstore
 from six import string_types
 
 
-__all__ = ['Arctic', 'VERSION_STORE', 'TICK_STORE', 'CHUNK_STORE', 'register_library_type']
+__all__ = ['Arctic', 'VERSION_STORE', 'METADATA_STORE', 'TICK_STORE', 'CHUNK_STORE', 'register_library_type']
 
 logger = logging.getLogger(__name__)
 
 # Default Arctic application name: 'arctic'
 APPLICATION_NAME = 'arctic'
 VERSION_STORE = version_store.VERSION_STORE_TYPE
+METADATA_STORE = metadata_store.METADATA_STORE_TYPE
 TICK_STORE = tickstore.TICK_STORE_TYPE
 CHUNK_STORE = chunkstore.CHUNK_STORE_TYPE
 LIBRARY_TYPES = {version_store.VERSION_STORE_TYPE: version_store.VersionStore,
                  tickstore.TICK_STORE_TYPE: tickstore.TickStore,
                  toplevel.TICK_STORE_TYPE: toplevel.TopLevelTickStore,
-                 chunkstore.CHUNK_STORE_TYPE: chunkstore.ChunkStore
+                 chunkstore.CHUNK_STORE_TYPE: chunkstore.ChunkStore,
+                 bson_store.BSON_STORE_TYPE: bson_store.BSONStore,
+                 metadata_store.METADATA_STORE_TYPE: metadata_store.MetadataStore
                  }
 
 
@@ -52,6 +55,7 @@ class Arctic(object):
                                 (other Python types are pickled)
        - arctic.TICK_STORE - Tick specific library. Supports 'snapshots', efficiently
                              stores updates, not versioned.
+       - arctic.METADATA_STORE - Stores metadata with timestamps
 
     Arctic and ArcticLibrary are responsible for Connection setup, authentication,
     dispatch to the appropriate library implementation, and quotas.
@@ -94,7 +98,7 @@ class Arctic(object):
         self._socket_timeout = socketTimeoutMS
         self._connect_timeout = connectTimeoutMS
         self._server_selection_timeout = serverSelectionTimeoutMS
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
 
         if isinstance(mongo_host, string_types):
             self.mongo_host = mongo_host
@@ -129,6 +133,14 @@ class Arctic(object):
                 self.__conn.server_info()
 
             return self.__conn
+
+    def reset(self):
+        with self._lock:
+            if self.__conn is not None:
+                self.__conn.close()
+                self.__conn = None
+            for _, l in self._library_cache.items():
+                l._reset()
 
     def __str__(self):
         return "<Arctic at %s, connected to %s>" % (hex(id(self)), str(self._conn))
@@ -313,13 +325,21 @@ class Arctic(object):
         to_lib: str
             The new name of the library
         """
+        to_colname = to_lib
+        if '.' in from_lib and '.' in to_lib:
+            if from_lib.split('.')[0] != to_lib.split('.')[0]:
+                raise ValueError("Collection can only be renamed in the same database")
+            to_colname = to_lib.split('.')[1]
+
         l = ArcticLibraryBinding(self, from_lib)
         colname = l.get_top_level_collection().name
-        logger.info('Dropping collection: %s' % colname)
-        l._db[colname].rename(to_lib)
+
+        logger.info('Renaming collection: %s' % colname)
+        l._db[colname].rename(to_colname)
         for coll in l._db.collection_names():
             if coll.startswith(colname + '.'):
-                l._db[coll].rename(coll.replace(from_lib, to_lib))
+                l._db[coll].rename(coll.replace(colname, to_colname))
+
         if from_lib in self._library_cache:
             del self._library_cache[from_lib]
             del self._library_cache[l.get_name()]
@@ -376,9 +396,17 @@ class ArcticLibraryBinding(object):
         database_name, library = self._parse_db_lib(library)
         self.library = library
         self.database_name = database_name
-        self._db = self.arctic._conn[database_name]
-        self._auth(self._db)
-        self._library_coll = self._db[library]
+        self.get_top_level_collection()  # Eagerly trigger auth
+
+    @property
+    def _db(self):
+        db = self.arctic._conn[self.database_name]
+        self._auth(db)
+        return db
+
+    @property
+    def _library_coll(self):
+        return self._db[self.library]
 
     def __str__(self):
         return """<ArcticLibrary at %s, %s.%s>

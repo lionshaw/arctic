@@ -66,7 +66,7 @@ def compressHC(pString):
     return _compress(pString, LZ4_compressHC)
 
 
-cdef _compress(pString, int (*Fnptr_LZ4_compress)(char *, char *, int)):
+cdef _compress(pString, int (*Fnptr_LZ4_compress)(const char *, char *, int)):
     # sizes
     cdef uint32_t compressed_size
     cdef uint32_t original_size = len(pString)
@@ -116,7 +116,7 @@ def decompress(pString):
     result = <char*>malloc(original_size)
     # decompress
     ret = LZ4_decompress_safe(cString + hdr_size, result, compressed_size - hdr_size, original_size)
-    if ret <= 0 or ret != original_size:
+    if ret != original_size:
         free(result)
         raise Exception("Error decompressing")
     # cast back into python string
@@ -141,7 +141,7 @@ def compressarrHC(pStrList):
     return _compressarr(pStrList, LZ4_compressHC)
 
 
-cdef _compressarr(pStrList, int (*Fnptr_LZ4_compress)(char *, char *, int) nogil):
+cdef _compressarr(pStrList, int (*Fnptr_LZ4_compress)(const char *, char *, int) nogil):
     
     if len(pStrList) == 0:
         return []

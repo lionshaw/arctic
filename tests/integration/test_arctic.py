@@ -23,6 +23,16 @@ def test_connect_to_Arctic_connection(mongo_server, mongo_host):
     assert arctic.mongo_host == mongo_host
 
 
+def test_reset_Arctic(mongo_host, library_name):
+    arctic = Arctic(mongo_host=mongo_host)
+    arctic.list_libraries()
+    arctic.initialize_library(library_name, VERSION_STORE)
+    arctic[library_name]
+    c = arctic._conn
+    arctic.reset()
+    assert len(c.nodes) == 0
+
+
 def test_simple(library):
     sym = 'symbol'
     data = get_large_ts(100)
@@ -156,6 +166,25 @@ def test_lib_rename(arctic):
         l = arctic['test']
     assert('Library test' in str(e))
     assert('test' not in arctic.list_libraries())
+
+
+def test_lib_rename_namespace(arctic):
+    arctic.initialize_library('namespace.test')
+    l = arctic['namespace.test']
+    l.write('test_data', 'abc')
+
+    with pytest.raises(ValueError) as e:
+        arctic.rename_library('namespace.test', 'new_namespace.test')
+    assert('Collection can only be renamed in the same database' in str(e))
+
+    arctic.rename_library('namespace.test', 'namespace.newlib')
+    l = arctic['namespace.newlib']
+    assert(l.read('test_data').data == 'abc')
+
+    with pytest.raises(LibraryNotFoundException) as e:
+        l = arctic['namespace.test']
+    assert('Library namespace.test' in str(e))
+    assert('namespace.test' not in arctic.list_libraries())
 
 
 def test_lib_type(arctic):

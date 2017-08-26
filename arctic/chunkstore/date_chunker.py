@@ -24,8 +24,18 @@ class DateChunker(Chunker):
         """
         if 'date' in df.index.names:
             dates = df.index.get_level_values('date')
+            if not df.index.is_monotonic_increasing:
+                df = df.sort_index()
         elif 'date' in df.columns:
             dates = pd.DatetimeIndex(df.date)
+            if not dates.is_monotonic_increasing:
+                # providing support for pandas 0.16.2 to 0.20.x
+                # neither sort method exists in both
+                try:
+                    df = df.sort_values('date')
+                except AttributeError:
+                    df = df.sort(columns='date')
+                dates = pd.DatetimeIndex(df.date)
         else:
             raise Exception("Data must be datetime indexed or have a column named 'date'")
 
@@ -59,7 +69,7 @@ class DateChunker(Chunker):
         -------
         string
         """
-        return chunk_id.strftime("%Y-%m-%d").encode('ascii')
+        return str(chunk_id).encode('ascii')
 
     def to_mongo(self, range_obj):
         """

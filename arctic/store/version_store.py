@@ -6,8 +6,7 @@ from pymongo import ReadPreference
 import pymongo
 from pymongo.errors import OperationFailure, AutoReconnect
 
-from .._util import indent, enable_powerof2sizes, \
-    enable_sharding
+from .._util import indent, enable_sharding
 from ..date import mktz, datetime_to_ms, ms_to_datetime
 from ..decorators import mongo_retry
 from ..exceptions import NoDataFoundException, DuplicateSnapshotException, \
@@ -39,7 +38,7 @@ class VersionStore(object):
     _bson_handler = PickleStore()
 
     @classmethod
-    def initialize_library(cls, arctic_lib, hashed=False, **kwargs):
+    def initialize_library(cls, arctic_lib, hashed=True, **kwargs):
         c = arctic_lib.get_top_level_collection()
 
         if '%s.changes' % c.name not in mongo_retry(c.database.collection_names)():
@@ -50,12 +49,6 @@ class VersionStore(object):
             th.initialize_library(arctic_lib, **kwargs)
         VersionStore._bson_handler.initialize_library(arctic_lib, **kwargs)
         VersionStore(arctic_lib)._ensure_index()
-
-        logger.info("Trying to enable usePowerOf2Sizes...")
-        try:
-            enable_powerof2sizes(arctic_lib.arctic, arctic_lib.get_name())
-        except OperationFailure as e:
-            logger.error("Library created, but couldn't enable usePowerOf2Sizes: %s" % str(e))
 
         logger.info("Trying to enable sharding...")
         try:
@@ -76,15 +69,16 @@ class VersionStore(object):
         for th in _TYPE_HANDLERS:
             th._ensure_index(collection)
 
-    @mongo_retry
     def __init__(self, arctic_lib):
         self._arctic_lib = arctic_lib
-
         # Do we allow reading from secondaries
         self._allow_secondary = self._arctic_lib.arctic._allow_secondary
+        self._reset()
 
+    @mongo_retry
+    def _reset(self):
         # The default collections
-        self._collection = arctic_lib.get_top_level_collection()
+        self._collection = self._arctic_lib.get_top_level_collection()
         self._audit = self._collection.audit
         self._snapshots = self._collection.snapshots
         self._versions = self._collection.versions
@@ -471,20 +465,27 @@ class VersionStore(object):
                                                    sort=[('version', pymongo.DESCENDING)])
 
         if len(data) == 0 and previous_version is not None:
-            return VersionedItem(symbol=symbol, library=self._arctic_lib.get_name(), version=previous_version,
+            return VersionedItem(symbol=symbol, library=self._arctic_lib.get_name(), version=previous_version['version'],
                                  metadata=version.pop('metadata', None), data=None)
 
         if upsert and previous_version is None:
             return self.write(symbol=symbol, data=data, prune_previous_version=prune_previous_version, metadata=metadata)
 
         assert previous_version is not None
+        dirty_append = False
 
-        # If the version numbers aren't in line, then we've lost some data.
-        next_ver = self._version_nums.find_one({'symbol': symbol})['version']
-        if next_ver != previous_version['version']:
-            logger.error('''version_nums is out of sync with previous version document.
-            This probably means that either a version document write has previously failed, or the previous version has been deleted.
-            There will be a gap in the data.''')
+        # Take a version number for this append.
+        # If the version numbers of this and the previous version aren't sequential,
+        # then we've either had a failed append in the past,
+        # we're in the midst of a concurrent update, we've deleted a version in-between
+        # or are somehow 'forking' history
+        next_ver = self._version_nums.find_one_and_update({'symbol': symbol, },
+                                                          {'$inc': {'version': 1}},
+                                                          upsert=False, new=True)['version']
+        if next_ver != previous_version['version'] + 1:
+            dirty_append = True
+            logger.debug('''version_nums is out of sync with previous version document.
+            This probably means that either a version document write has previously failed, or the previous version has been deleted.''')
 
         # if the symbol has previously been deleted then overwrite
         previous_metadata = previous_version.get('metadata', None)
@@ -500,18 +501,12 @@ class VersionStore(object):
             version['metadata'] = previous_version['metadata']
 
         if handler and hasattr(handler, 'append'):
-            mongo_retry(handler.append)(self._arctic_lib, version, symbol, data, previous_version, **kwargs)
+            mongo_retry(handler.append)(self._arctic_lib, version, symbol, data,
+                                        previous_version, dirty_append=dirty_append, **kwargs)
         else:
             raise Exception("Append not implemented for handler %s" % handler)
 
-        # Get the next version number  - check there hasn't been a concurrent write
-        next_ver = self._version_nums.find_one_and_update({'symbol': symbol, 'version': next_ver},
-                                                          {'$inc': {'version': 1}},
-                                                          upsert=False, new=True)
-        if next_ver is None:
-            raise OptimisticLockException()
-
-        version['version'] = next_ver['version']
+        version['version'] = next_ver
 
         # Insert the new version into the version DB
         mongo_retry(self._versions.insert_one)(version)
@@ -593,7 +588,7 @@ class VersionStore(object):
         versions = list(versions_find({  # Find versions of this symbol
                                        'symbol': symbol,
                                        # Not snapshotted
-                                       '$or': [{'parent': {'$exists': False}}, {'parent': {'$size': 0}}],
+                                       '$or': [{'parent': {'$exists': False}}, {'parent': []}],
                                        # At least 'keep_mins' old
                                        '_id': {'$lt': bson.ObjectId.from_datetime(
                                                         dt.utcnow()
@@ -702,6 +697,7 @@ class VersionStore(object):
         # Create the audit entry
         mongo_retry(self._audit.insert_one)(audit)
 
+    @mongo_retry
     def snapshot(self, snap_name, metadata=None, skip_symbols=None, versions=None):
         """
         Snapshot versions of symbols in the library.  Can be used like:
@@ -745,6 +741,7 @@ class VersionStore(object):
 
         mongo_retry(self._snapshots.insert_one)(snapshot)
 
+    @mongo_retry
     def delete_snapshot(self, snap_name):
         """
         Delete a named snapshot
@@ -764,6 +761,7 @@ class VersionStore(object):
 
         self._snapshots.delete_one({'name': snap_name})
 
+    @mongo_retry
     def list_snapshots(self):
         """
         List the snapshots in the library
@@ -774,6 +772,7 @@ class VersionStore(object):
         """
         return dict((i['name'], i['metadata']) for i in self._snapshots.find())
 
+    @mongo_retry
     def stats(self):
         """
         Return storage statistics about the library
@@ -791,7 +790,7 @@ class VersionStore(object):
             sharding = conn.config.databases.find_one({'_id': db.name})
             if sharding:
                 res['sharding'].update(sharding)
-            res['sharding']['collections'] = list(conn.config.collections.find({'_id': {'$regex': '^' + db.name + "\..*"}}))
+            res['sharding']['collections'] = list(conn.config.collections.find({'_id': {'$regex': '^' + db.name + r"\..*"}}))
         except OperationFailure:
             # Access denied
             pass

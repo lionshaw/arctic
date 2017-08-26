@@ -3,8 +3,6 @@ import logging
 
 from bson.binary import Binary
 from pandas import DataFrame, Series, Panel
-from pandas.tslib import Timestamp, get_timezone
-
 import numpy as np
 
 from arctic.serialization.numpy_records import SeriesSerializer, DataFrameSerializer
@@ -84,7 +82,7 @@ class PandasStore(NdarrayStore):
                 if start > dts[-1]:
                     return -1, -1
                 idxstart = min(np.searchsorted(dts, start), len(dts) - 1)
-                idxend = min(np.searchsorted(dts, end), len(dts) - 1)
+                idxend = min(np.searchsorted(dts, end, side='right'), len(dts) - 1)
                 return int(index['index'][idxstart]), int(index['index'][idxend] + 1)
         return super(PandasStore, self)._index_range(version, symbol, **kwargs)
 
@@ -154,9 +152,9 @@ class PandasSeriesStore(PandasStore):
         item, md = self.SERIALIZER.serialize(item)
         super(PandasSeriesStore, self).write(arctic_lib, version, symbol, item, previous_version, dtype=md)
 
-    def append(self, arctic_lib, version, symbol, item, previous_version):
+    def append(self, arctic_lib, version, symbol, item, previous_version, **kwargs):
         item, md = self.SERIALIZER.serialize(item)
-        super(PandasSeriesStore, self).append(arctic_lib, version, symbol, item, previous_version, dtype=md)
+        super(PandasSeriesStore, self).append(arctic_lib, version, symbol, item, previous_version, dtype=md, **kwargs)
 
     def read(self, arctic_lib, version, symbol, **kwargs):
         item = super(PandasSeriesStore, self).read(arctic_lib, version, symbol, **kwargs)
@@ -178,9 +176,9 @@ class PandasDataFrameStore(PandasStore):
         item, md = self.SERIALIZER.serialize(item)
         super(PandasDataFrameStore, self).write(arctic_lib, version, symbol, item, previous_version, dtype=md)
 
-    def append(self, arctic_lib, version, symbol, item, previous_version):
+    def append(self, arctic_lib, version, symbol, item, previous_version, **kwargs):
         item, md = self.SERIALIZER.serialize(item)
-        super(PandasDataFrameStore, self).append(arctic_lib, version, symbol, item, previous_version, dtype=md)
+        super(PandasDataFrameStore, self).append(arctic_lib, version, symbol, item, previous_version, dtype=md, **kwargs)
 
     def read(self, arctic_lib, version, symbol, **kwargs):
         item = super(PandasDataFrameStore, self).read(arctic_lib, version, symbol, **kwargs)
@@ -220,5 +218,5 @@ class PandasPanelStore(PandasDataFrameStore):
             return item.iloc[:, 0].unstack().to_panel()
         return item.to_panel()
 
-    def append(self, arctic_lib, version, symbol, item, previous_version):
+    def append(self, arctic_lib, version, symbol, item, previous_version, **kwargs):
         raise ValueError('Appending not supported for pandas.Panel')

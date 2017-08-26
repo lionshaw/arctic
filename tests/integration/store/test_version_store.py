@@ -11,8 +11,10 @@ from datetime import datetime
 from mock import patch
 import time
 import pytest
+import numpy as np
 
 from arctic.exceptions import NoDataFoundException, DuplicateSnapshotException
+from arctic.date import DateRange
 
 from ...util import read_str_as_pandas
 from arctic.date._mktz import mktz
@@ -272,8 +274,10 @@ def test_append_should_overwrite_after_delete(library):
 
 
 def test_append_empty_ts(library):
-    library.append(symbol, ts1, upsert=True)
-    library.append(symbol, pd.DataFrame(), upsert=True)
+    data = library.append(symbol, ts1, upsert=True)
+    assert(data.version == 1)
+    data = library.append(symbol, pd.DataFrame(), upsert=True)
+    assert(data.version == 1)
     assert len(library.read(symbol).data) == len(ts1)
 
 
@@ -942,3 +946,30 @@ def test_list_symbols_regex(library):
     assert 'furble' not in library.list_symbols(a=1, regex='asd')
     assert library.list_symbols(a={'$gt': 5}, regex='asd') == []
     assert library.list_symbols(b={'$gt': 5}, regex='asd') == ['asdf']
+
+
+def test_date_range_large(library):
+    index = [dt(2017,1,1)]*20000 + [dt(2017,1,2)]*20000
+    data = np.random.random((40000, 10))
+    df = pd.DataFrame(index=index, data=data)
+    df.index.name = 'index'
+    df.columns = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j']
+    library.write('test', df)
+    r = library.read('test', date_range=DateRange(dt(2017,1,1), dt(2017,1,2)))
+    assert_frame_equal(df, r.data)
+
+
+def test_append_after_empty(library):
+    len_df = 500
+    index = [dt(2017, 1, 2)] * len_df
+    data = np.random.random((len_df, 10))
+    df = pd.DataFrame(index=index, data=data)
+    df.index.name = 'index'
+    df.columns = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j']
+    library.write(symbol, df.iloc[:0])
+
+    for i in range(len_df):
+        library.append(symbol, df.iloc[i:i + 1])
+    r = library.read(symbol)
+    assert_frame_equal(df, r.data)
+

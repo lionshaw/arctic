@@ -1,7 +1,85 @@
 ## Changelog
 
-### 1.34
+### 1.51 (2017-08-21)
+  * Bugfix:  #397 Remove calls to deprecated methods in pymongo
+  * Bugfix:  #402 Append to empty DF fails in VersionStore
 
+### 1.50 (2017-08-18)
+  * Feature: #396 MetadataStore.read now supports as_of argument
+  * Bugfix:  #397 Pin pymongo==3.4.0
+
+### 1.49 (2017-08-02)
+  * Feature: #392 MetadataStore
+  * Bugfix:  #384 sentinels missing time data on chunk start/ends in ChunkStore
+  * Bugfix:  #382 Remove dependency on cython being pre-installed
+  * Bugfix:  #343 Renaming libraries/collections within a namespace/database
+  
+### 1.48 (2017-06-26)
+  * BugFix: Rollback #363, as it breaks multi-index dataframe
+  * Bugfix:  #372 OSX build improvements
+
+### 1.47 (2017-06-19)
+  * Feature: Re-introduce #363 `concat` flag, essentially undo-ing 1.45
+  * BugFix: #377 Fix broken `replace_one` on BSONStore and add `bulk_write`
+
+### 1.46 (2017-06-13)
+  * Feature: #374 Shard BSONStore on `_id` rather than `symbol`
+
+### 1.45 (2017-06-09)
+  * BugFix: Rollback #363, which can cause ordering issues on append
+
+### 1.44 (2017-06-08)
+  * Feature: #364 Expose compressHC from internal arctic LZ4 and remove external LZ4 dependency
+  * Feature: #363 Appending older data (compare to what's exist in library) will raise. Use `concat=True` to append only the
+             new bits
+  * Feature: #371 Expose more functionality in BSONStore
+  
+### 1.43 (2017-05-30)
+  * Bugfix:  #350 remove deprecated pandas calls
+  * Bugfix:  #360 version incorrect in empty append in VersionStore
+  * Feature: #365 add generic BSON store
+
+### 1.42 (2017-05-12)
+  * Bugfix: #346 fixed daterange subsetting error on very large dateframes in version store
+  * Bugfix: #351 $size queries can't use indexes, use alternative queries
+
+### 1.41 (2017-04-20)
+  * Bugfix: #334 Chunk range param with pandas object fails in chunkstore.get_chunk_ranges
+  * Bugfix: #339 Depending on lz4<=0.8.2 to fix build errors
+  * Bugfix: #342 fixed compilation errors on Mac OSX
+  * Bugfix: #344 fixed data corruption problem with concurrent appends
+
+### 1.40 (2017-03-03)
+  * BugFix: #330 Make Arctic._lock reentrant 
+
+### 1.39 (2017-03-03)
+  * Feature:  #329 Add reset() method to Arctic 
+
+### 1.38 (2017-02-22)
+  * Bugfix:  #324 Datetime indexes must be sorted in chunkstore
+  * Feature: #290 improve performance of tickstore column reads
+
+### 1.37 (2017-1-31)
+  * Bugfix:  #300 to_datetime deprecated in pandas, use to_pydatetime instead
+  * Bugfix:  #309 formatting change for DateRange ```__str__```
+  * Feature: #313 set and read user specified metadata in chunkstore
+  * Feature: #319 Audit log support in ChunkStor
+  * Bugfix:  #216 Tickstore write fails with named index column
+
+
+### 1.36 (2016-12-13)
+  
+  * Feature: Default to hashed based sharding
+  * Bugfix: retry socket errors during VersionStore snapshot operations
+
+### 1.35 (2016-11-29)
+
+  * Bugfix:  #296 Cannot compress/decompress empty string
+
+### 1.34 (2016-11-29)
+
+  * Feature: #294 Move per-chunk metadata for chunkstore to a separate collection
+  * Bugfix:  #292 Account for metadata size during size chunking in ChunkStore
   * Feature: #283 Support for all pandas frequency strings in ChunkStore DateChunker
   * Feature: #286 Add has_symbol to ChunkStore and support for partial symbol matching in list_symbols
 

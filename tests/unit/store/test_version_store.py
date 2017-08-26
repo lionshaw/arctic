@@ -146,12 +146,10 @@ def test_write_check_quota():
 def test_initialize_library():
     arctic_lib = create_autospec(ArcticLibraryBinding)
     arctic_lib.arctic = create_autospec(Arctic, _allow_secondary=False)
-    with patch('arctic.store.version_store.enable_powerof2sizes', autospec=True) as enable_powerof2sizes, \
-         patch('arctic.store.version_store.enable_sharding', autospec=True) as enable_sharding:
+    with patch('arctic.store.version_store.enable_sharding', autospec=True) as enable_sharding:
         arctic_lib.get_top_level_collection.return_value.database.create_collection.__name__ = 'some_name'
         arctic_lib.get_top_level_collection.return_value.database.collection_names.__name__ = 'some_name'
         VersionStore.initialize_library(arctic_lib, hashed=sentinel.hashed)
-    assert enable_powerof2sizes.call_args_list == [call(arctic_lib.arctic, arctic_lib.get_name())]
     assert enable_sharding.call_args_list == [call(arctic_lib.arctic, arctic_lib.get_name(), hashed=sentinel.hashed)]
 
 
@@ -179,7 +177,7 @@ def test_prune_previous_versions_0_timeout():
     assert self._versions.with_options.call_args_list == [call(read_preference=ReadPreference.PRIMARY)]
     assert self._versions.with_options.return_value.find.call_args_list == [
                                                   call({'$or': [{'parent': {'$exists': False}},
-                                                                {'parent': {'$size': 0}}],
+                                                                {'parent': []}],
                                                         'symbol': sentinel.symbol,
                                                         '_id': {'$lt': bson.ObjectId('524a10810000000000000000')}},
                                                        sort=[('version', -1)],

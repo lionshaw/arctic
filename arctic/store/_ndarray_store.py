@@ -211,7 +211,7 @@ class NdarrayStore(object):
         rtn = np.dtype(rtn, metadata=dict(dtype.metadata or {}))
         return rtn
 
-    def append(self, arctic_lib, version, symbol, item, previous_version, dtype=None):
+    def append(self, arctic_lib, version, symbol, item, previous_version, dtype=None, dirty_append=True):
         collection = arctic_lib.get_top_level_collection()
         if previous_version.get('shape', [-1]) != [-1, ] + list(item.shape)[1:]:
             raise UnhandledDtypeException()
@@ -255,9 +255,9 @@ class NdarrayStore(object):
             version['dtype'] = previous_version['dtype']
             version['dtype_metadata'] = previous_version['dtype_metadata']
             version['type'] = self.TYPE
-            self._do_append(collection, version, symbol, item, previous_version)
+            self._do_append(collection, version, symbol, item, previous_version, dirty_append)
 
-    def _do_append(self, collection, version, symbol, item, previous_version):
+    def _do_append(self, collection, version, symbol, item, previous_version, dirty_append):
 
         data = item.tostring()
         # Compatibility with Arctic 1.22.0 that didn't write base_sha into the version document
@@ -274,7 +274,7 @@ class NdarrayStore(object):
 
         #_CHUNK_SIZE is probably too big if we're only appending single rows of data - perhaps something smaller,
         #or also look at number of appended segments?
-        if version['append_count'] < _APPEND_COUNT and version['append_size'] < _APPEND_SIZE:
+        if not dirty_append and version['append_count'] < _APPEND_COUNT and version['append_size'] < _APPEND_SIZE:
             version['base_version_id'] = previous_version.get('base_version_id', previous_version['_id'])
 
             if len(item) > 0:
@@ -318,7 +318,7 @@ class NdarrayStore(object):
         # Figure out which is the last 'full' chunk
         spec = {'symbol': symbol,
                 'parent': previous_version.get('base_version_id', previous_version['_id']),
-                'segment': {'$lt': version['up_to']}}
+                'segment': {'$lt': previous_version['up_to']}}
 
         read_index_range = [0, None]
         # The unchanged segments are those not yet compressed
@@ -331,7 +331,8 @@ class NdarrayStore(object):
             # We want to stop iterating when we find the first uncompressed chunks
             if not segment['compressed']:
                 # We include the last chunk in the recompression
-                unchanged_segment_ids.pop()
+                if unchanged_segment_ids:
+                    unchanged_segment_ids.pop()
                 break
             unchanged_segment_ids.append(segment)
 
@@ -345,6 +346,7 @@ class NdarrayStore(object):
         if unchanged_segment_ids:
             read_index_range[0] = unchanged_segment_ids[-1]['segment'] + 1
 
+        # Only read back the section that needs to be compressed here (index_range=...)
         old_arr = self._do_read(collection, previous_version, symbol, index_range=read_index_range)
         if len(item) == 0:
             logger.debug('Rewrite and compress/chunk item %s, rewrote old_arr' % symbol)
@@ -404,8 +406,9 @@ class NdarrayStore(object):
         if previous_version:
             if 'sha' in previous_version \
                     and self.checksum(item[:previous_version['up_to']]) == previous_version['sha']:
-                #The first n rows are identical to the previous version, so just append.
-                self._do_append(collection, version, symbol, item[previous_version['up_to']:], previous_version)
+                # The first n rows are identical to the previous version, so just append.
+                # Do a 'dirty' append (i.e. concat & start from a new base version) for safety
+                self._do_append(collection, version, symbol, item[previous_version['up_to']:], previous_version, dirty_append=True)
                 return
 
         version['base_sha'] = version['sha']
@@ -442,7 +445,7 @@ class NdarrayStore(object):
         compressed_chunks = compress_array(chunks)
 
         # Write
-        bulk = collection.initialize_unordered_bulk_op()
+        bulk = []
         for i, chunk in zip(idxs, compressed_chunks):
             segment = {'data': Binary(chunk), 'compressed': True}
             segment['segment'] = min((i + 1) * chunk_size - 1, length - 1) + segment_offset
@@ -450,13 +453,14 @@ class NdarrayStore(object):
             sha = checksum(symbol, segment)
             if sha not in previous_shas:
                 segment['sha'] = sha
-                bulk.find({'symbol': symbol, 'sha': sha, 'segment': segment['segment']}
-                          ).upsert().update_one({'$set': segment, '$addToSet': {'parent': version['_id']}})
+                bulk.append(pymongo.UpdateOne({'symbol': symbol, 'sha': sha, 'segment': segment['segment']},
+                                              {'$set': segment, '$addToSet': {'parent': version['_id']}},
+                                              upsert=True))
             else:
-                bulk.find({'symbol': symbol, 'sha': sha, 'segment': segment['segment']}
-                          ).update_one({'$addToSet': {'parent': version['_id']}})
+                bulk.append(pymongo.UpdateOne({'symbol': symbol, 'sha': sha, 'segment': segment['segment']},
+                                              {'$addToSet': {'parent': version['_id']}}))
         if i != -1:
-            bulk.execute()
+            collection.bulk_write(bulk, ordered=False)
 
         segment_index = self._segment_index(item, existing_index=existing_index, start=segment_offset,
                                             new_segments=segment_index)
